@@ -365,19 +365,19 @@ def mkchrs(data: pd.DataFrame, data_unscaled: pd.DataFrame):
     for x in density.keys():
         kd.fit(density[x])
         density[x] = convert_float(-kd.score(density[x]))
-    for x, y in diameter.items():
-        max_square_distance = 0
-        n = y.shape[0]
-        for i in tqdm.tqdm(range(n)):
-            vals = vectorized_square_distance(y[i:], y[i]).sum(axis=1).max()
-            max_square_distance = max(max_square_distance, vals)
-        diameter[x] = max_square_distance
+    # for x, y in diameter.items():
+    #     max_square_distance = 0
+    #     n = y.shape[0]
+    #     for i in tqdm.tqdm(range(n)):
+    #         vals = vectorized_square_distance(y[i:], y[i]).sum(axis=1).max()
+    #         max_square_distance = max(max_square_distance, vals)
+    #     diameter[x] = max_square_distance
 
     density = pd.Series(density)
-    diameter = pd.Series(diameter)
+    # diameter = pd.Series(diameter)
     ans = pd.DataFrame(density.rename('density')).join(ans)
-    ans = pd.DataFrame(diameter.rename('diameter')).join(ans).reset_index().rename(
-        columns={'index': 'cluster'}).set_index('cluster')
+    # ans = pd.DataFrame(diameter.rename('diameter')).join(ans)
+    ans = ans.reset_index().rename(columns={'index': 'cluster'}).set_index('cluster')
     return ans
 
 
@@ -709,7 +709,31 @@ def read_img_as_base64(path):
     return bs64.decode('utf-8')
 
 
-def insert_images(common_img_path, drop_noise=True):
+def insert_plots(df_unscaled, cluster, common_path, drop_noise=True):
+    res = "<table class=\"plot-table\">"
+    cr = 6
+    now = df_unscaled[df_unscaled.cluster == cluster]
+    for num, j in enumerate(now.columns):
+        if j == 'cluster':
+            continue
+        if num % cr == 0:
+            res += "<tr>"
+        now_plot = sns.kdeplot(data=now, x=j, palette=[COLORS3[int(cluster)]], fill=True, hue='cluster')
+        now_path = get_plot_filename(common_path)
+        now_plot.get_figure().savefig(now_path)
+        now_plot.get_figure().clf()
+        res += f"<td><img src=\"data:image/png;base64,{read_img_as_base64(now_path)}\" width=\"199\"" \
+               f" height=\"199\"><br><p>{WORDS.get(j, j)}</p>"
+        if num % cr == cr - 1:
+            res += "</tr>"
+    if not res.endswith("</tr>"):
+        res += "</tr>"
+    res += "</table>"
+    res += "<br>"
+    return res
+
+
+def insert_images(common_img_path, add_plots, df_unscaled, common_path, drop_noise=True):
     res = ""
     header = set()
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
@@ -750,12 +774,14 @@ def insert_images(common_img_path, drop_noise=True):
                     res += f"<td><img src=\"data:image/png;base64,{read_img_as_base64(i)}\" " \
                            f"width=\"228\" height=\"216\"></td>"
             res += "</tr>"
+        if add_plots:
+            res += f"<tr><td colspan=\"{len(header) + 1}\">{insert_plots(df_unscaled, cl, common_path)}</td></tr>"
     res += "</table>"
     return res
 
 
 def visualise_statistics(common_path, scaled_table_name, unscale_table_name, images_folder,
-                         name="Visualization", output="statistics.html"):
+                         name="Visualization", output="statistics.html", add_plots=False):
     global DELETED, CONVERTING
     res = f"""<!DOCTYPE html>
 <html>
@@ -818,6 +844,10 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
             .details th {{
                 text-align: right;
             }}
+            
+            .plot-table td, .plot-table {{
+                border: none;
+            }}
         </style>"""
 
     res += f"""</head>
@@ -871,8 +901,8 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
     all_stats.sort_values(by='size', inplace=True, ascending=False)
     res += csv2html(all_stats, name='Размеры и характеристики', draw_full=True,
                     get_color=[no_color, color_cl_sizes] + [no_color] * (stats.shape[1]),
-                    convert_num=[process_int_numbers, convert_float, convert_float, process_int_numbers] + [str] * (
-                            stats.shape[1] - 2), square_table=False)
+                    convert_num=[process_int_numbers, convert_float, process_int_numbers] + [str] * (
+                            stats.shape[1] - 1), square_table=False)
     res += "<br><br>"
 
     #     res += "сводная инфа"
@@ -909,7 +939,7 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
     #     res + "скриншоты по кластерочкам"
     print('IMAGES')
     res += f"<h4>Скриншоты прохождений курсов</h4>"
-    res += insert_images(os.path.join(common_path, images_folder))
+    res += insert_images(os.path.join(common_path, images_folder), add_plots, df_unscaled, common_path)
 
     print('SAVING')
     res += """</body></html>"""
@@ -931,10 +961,11 @@ def main():
     parser.add_argument('--title', type=str, default='stats', help='Header and title of resulting file')
     parser.add_argument('-o', type=str, default='stats.html', help='Output file name')
     parser.add_argument('--dictionary', type=str, help='Path to dictionary (not regarding --common-path)', default='')
+    parser.add_argument('--add-plots', action="store_true")
     args = parser.parse_args()
     WORDS = get_dictionary(args.dictionary)
     visualise_statistics(args.common_path, args.scaled_table, args.unscaled_table, args.images,
-                         args.title, args.o)
+                         args.title, args.o, args.add_plots)
 
 
 if __name__ == '__main__':
