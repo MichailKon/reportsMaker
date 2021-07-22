@@ -633,10 +633,12 @@ def get_lda(df_unscaled, common_path):
         if (now_df[i].nunique() == 1 or str(i).endswith('.1')) and i != "cluster":
             now_df = now_df.drop(i, axis=1)
     df_transformed = lda_fit_and_transform(now_df.drop('cluster', axis=1), now_df.cluster)
+    now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
+    print(dict(now_colors))
     fig1 = px.scatter(x=df_transformed[:, 0],
                       y=df_transformed[:, 1],
                       color=now_df.cluster,
-                      color_discrete_sequence=COLORS3[:now_df.cluster.nunique()])
+                      color_discrete_map=now_colors)
     fig1.update_traces(marker=dict(size=12,
                                    line=dict(width=1)),
                        selector=dict(mode='markers'))
@@ -657,7 +659,9 @@ def get_pairplot(df_unscaled, common_path):
     now_df.cluster = now_df.cluster.astype('str')
     now_df.columns = list(map(lambda x: WORDS.get(x, x), now_df.columns))
     now_df = now_df[now_df.cluster != "-1"]
-    plot = sns.pairplot(now_df, hue='cluster', palette=COLORS3[:now_df.cluster.nunique()])
+    now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
+    print(dict(now_colors))
+    plot = sns.pairplot(now_df, hue='cluster', palette=now_colors)
     now_path = get_plot_filename(common_path)
     plot.savefig(now_path)
     plt.clf()
