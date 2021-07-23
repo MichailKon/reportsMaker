@@ -634,7 +634,6 @@ def get_lda(df_unscaled, common_path):
             now_df = now_df.drop(i, axis=1)
     df_transformed = lda_fit_and_transform(now_df.drop('cluster', axis=1), now_df.cluster)
     now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
-    print(dict(now_colors))
     fig1 = px.scatter(x=df_transformed[:, 0],
                       y=df_transformed[:, 1],
                       color=now_df.cluster,
@@ -660,7 +659,6 @@ def get_pairplot(df_unscaled, common_path):
     now_df.columns = list(map(lambda x: WORDS.get(x, x), now_df.columns))
     now_df = now_df[now_df.cluster != "-1"]
     now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
-    print(dict(now_colors))
     plot = sns.pairplot(now_df, hue='cluster', palette=now_colors)
     now_path = get_plot_filename(common_path)
     plot.savefig(now_path)
@@ -713,8 +711,8 @@ def read_img_as_base64(path):
     return bs64.decode('utf-8')
 
 
-def insert_plots(df_unscaled, cluster, common_path, drop_noise=True):
-    res = "<table class=\"plot-table\">"
+def insert_plots(df_unscaled, cluster, common_path):
+    res = f"<h2>Графики плотностей для кластера {cluster}</h2><table class=\"plot-table\">"
     cr = 6
     now = df_unscaled[df_unscaled.cluster == cluster]
     for num, j in enumerate(now.columns):
@@ -737,7 +735,112 @@ def insert_plots(df_unscaled, cluster, common_path, drop_noise=True):
     return res
 
 
-def insert_images(common_img_path, add_plots, df_unscaled, common_path, drop_noise=True):
+def get_info_histplot(data_path, processed_df_path='', save_logs=''):
+    def calc_verdict(verdict, is_achieved, score, max_score):
+        return verdict if isinstance(verdict, str) else 'ok' if is_achieved == True and score == max_score else 'wrong'
+
+    from collections import defaultdict, Counter
+
+    def filter_logs(lg: pd.DataFrame):
+        was = set()
+
+        data = []
+        lg['submission_time'] = pd.to_datetime(lg['submission_time'])
+        lg.sort_values(by='submission_time', inplace=True)
+        for i in tqdm.tqdm(lg.itertuples(), total=len(lg)):
+            if (i.user_id, i.element_progress_id) in was:
+                continue
+            if i.verdict == 'ok':
+                was.add((i.user_id, i.element_progress_id))
+            data.append(i)
+        return pd.DataFrame(data).set_index('Index')
+
+    cs = pd.read_csv(os.path.join(data_path, 'course.csv'))
+    cs.date_start = pd.to_datetime(cs.date_start)
+    cs.close_date = pd.to_datetime(cs.close_date)
+    cs['course_len'] = (cs.close_date - cs.date_start).dt.days
+
+    if not processed_df_path:
+        logs = pd.read_csv(os.path.join(data_path, 'solution_log.csv'))
+        uep = pd.read_csv(os.path.join(data_path, 'user_element_progress.csv'))
+        ce = pd.read_csv(os.path.join(data_path, 'course_element.csv'))
+
+        uep = uep.join(ce[['module_id', 'element_type', 'element_id', 'score', 'id', 'is_advanced']].set_index(
+            ['module_id', 'element_type', 'element_id']).rename(
+            columns={'score': 'max_score', 'id': 'actual_element_id'}),
+            on=['course_module_id', 'course_element_type', 'course_element_id'], how='inner')
+        df1 = logs.join(
+            uep[['id', 'user_id', 'is_achieved', 'achieve_reason', 'course_id', 'max_score', 'is_advanced']].set_index(
+                'id'), on='element_progress_id', how='inner')
+        df1 = df1.join(cs[['id', 'date_start', 'close_date', 'course_len']].set_index('id'), on='course_id')
+        df1 = df1[df1.achieve_reason != 'transferred']
+        df1['verdict'] = df1.apply((lambda i: calc_verdict(i['verdict'], i['is_achieved'], i['score'], i['max_score'])),
+                                   axis=1)
+        df1 = filter_logs(df1)
+    else:
+        df1 = pd.read_csv(processed_df_path, index_col=0)
+    if save_logs:
+        df1.to_csv(save_logs)
+    df1.date_start = pd.to_datetime(df1.date_start)
+    df1.close_date = pd.to_datetime(df1.close_date)
+
+    cnt_blocks = 10
+
+    cur_df = df1.copy()
+    cur_df.submission_time = pd.to_datetime(cur_df.submission_time).map(lambda x: x.date())
+    cur_df.submission_time = pd.to_datetime(cur_df.submission_time)
+    cur_df['course_len'] = (cur_df.close_date - cur_df.date_start).dt.days
+    cur_df['passed_time'] = cur_df.submission_time - cur_df.date_start
+    converted_logs = defaultdict(lambda: defaultdict(list))
+    cnt_tasks = defaultdict(lambda: defaultdict(int))
+    chosen_course = dict()
+    for i in tqdm.tqdm(cur_df.itertuples(), total=cur_df.shape[0]):
+        if i.verdict == 'ok':
+            cnt_tasks[i.user_id][i.course_id] += 1
+            converted_logs[i.user_id][i.course_id].append(i.passed_time.days)
+
+    for i in tqdm.tqdm(cnt_tasks.items()):
+        courses = dict(i[1])
+        best = max(courses.items(), key=lambda x: x[1])[0]
+        chosen_course[i[0]] = best
+        converted_logs[i[0]] = converted_logs[i[0]][best]
+
+    for i in tqdm.tqdm(converted_logs):
+        converted_logs[i] = Counter(converted_logs[i])
+
+    res = dict()
+
+    for user_id, data in tqdm.tqdm(converted_logs.items()):
+        data = list(sorted(data.items()))
+        data = np.array(data)
+        add = data[0][0]
+        for j in range(len(data)):
+            data[j] = list(data[j])
+            data[j][0] -= add
+        course_len = cs[cs.id == chosen_course[user_id]].course_len.iloc[0]
+        one_block = (course_len + 1) / cnt_blocks
+        now = np.zeros(cnt_blocks)
+        for i in data:
+            now[int(i[0] / one_block)] = i[1]
+        res[user_id] = now
+    return res
+
+
+def insert_histplot(common_path, data, user_id):
+    now = np.array(data[user_id])
+    plot = sns.barplot(x=np.arange(now.shape[0]), y=data[user_id])
+    plot.set(xticklabels=[])
+    path = get_plot_filename(common_path)
+    plot.get_figure().savefig(path)
+    plot.get_figure().clf()
+    return f"<img src=\"data:image/png;base64,{read_img_as_base64(path)}\" width=\"228\" height=\"216\">"
+
+
+def insert_images(common_img_path, data_path, add_plots, df_unscaled, common_path,
+                  processed_logs='', save_logs='', drop_noise=True):
+    if not common_img_path:
+        return ""
+    histdata = get_info_histplot(data_path, processed_logs, save_logs)
     res = ""
     header = set()
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
@@ -761,6 +864,7 @@ def insert_images(common_img_path, add_plots, df_unscaled, common_path, drop_noi
     res += "<tr>"
     for i in header:
         res += f"<th>{i}</th>"
+    res += "<th>График сдачи задач</th>"
     res += "</tr>"
 
     for cl in sorted(data.keys()):
@@ -777,6 +881,7 @@ def insert_images(common_img_path, add_plots, df_unscaled, common_path, drop_noi
                 else:
                     res += f"<td><img src=\"data:image/png;base64,{read_img_as_base64(i)}\" " \
                            f"width=\"228\" height=\"216\"></td>"
+            res += f"<td>{insert_histplot(common_path, histdata, int(pupil))}</td>"
             res += "</tr>"
         if add_plots:
             res += f"<tr><td colspan=\"{len(header) + 1}\">{insert_plots(df_unscaled, cl, common_path)}</td></tr>"
@@ -784,8 +889,9 @@ def insert_images(common_img_path, add_plots, df_unscaled, common_path, drop_noi
     return res
 
 
-def visualise_statistics(common_path, scaled_table_name, unscale_table_name, images_folder,
-                         name="Visualization", output="statistics.html", add_plots=False):
+def visualise_statistics(common_path, scaled_table_name, unscale_table_name, images_folder, data_folder,
+                         processed_logs_path='', save_logs='',
+                         name="Visualization", output="statistics.html", add_plots=False, no_images=False):
     global DELETED, CONVERTING
     res = f"""<!DOCTYPE html>
 <html>
@@ -884,7 +990,7 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
 
     # графички, картиночки
     print('LDA')
-    res += "<h4>Графики с проекциями данных на оптимальную плоскость</h4>"
+    res += "<h4>Проекция на оптимальную плоскость, алгоритм LDA</h4>"
     #     return df_unscaled.head()
     res += get_lda(df_unscaled, common_path)
     print('PAIRPLOT')
@@ -941,9 +1047,11 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
     res += "<br><br>"
 
     #     res + "скриншоты по кластерочкам"
-    print('IMAGES')
-    res += f"<h4>Скриншоты прохождений курсов</h4>"
-    res += insert_images(os.path.join(common_path, images_folder), add_plots, df_unscaled, common_path)
+    if not no_images:
+        print('IMAGES')
+        res += f"<h4>Скриншоты прохождений курсов</h4>"
+        res += insert_images(os.path.join(common_path, images_folder), data_folder,
+                             add_plots, df_unscaled, common_path, processed_logs_path, save_logs)
 
     print('SAVING')
     res += """</body></html>"""
@@ -961,15 +1069,20 @@ def main():
                         required=True)
     parser.add_argument('--unscaled-table', type=str, help='Path to unscaled table (regarding --common-path)',
                         required=True)
-    parser.add_argument('--images', type=str, help='Path to images folder (regarding --common-path)', required=True)
+    parser.add_argument('--images', type=str, help='Path to images folder (regarding --common-path)', default='')
+    parser.add_argument('--dictionary', type=str, help='Path to dictionary (not regarding --common-path)', default='')
+    parser.add_argument('--data-path', type=str, help='Path to data folder (not regarding --common-path)', default='')
+    parser.add_argument('--processed-logs', type=str, help='Path to processed logs (not regarding --common-path',
+                        default='')
+    parser.add_argument('--save-logs', type=str, help='Save processed logs', default='')
     parser.add_argument('--title', type=str, default='stats', help='Header and title of resulting file')
     parser.add_argument('-o', type=str, default='stats.html', help='Output file name')
-    parser.add_argument('--dictionary', type=str, help='Path to dictionary (not regarding --common-path)', default='')
-    parser.add_argument('--add-plots', action="store_true")
+    parser.add_argument('--add-plots', action='store_true', help='Add plots to screenshots')
+    parser.add_argument('--no-images', action='store_true', help='Remove screenshots from resulting file')
     args = parser.parse_args()
     WORDS = get_dictionary(args.dictionary)
-    visualise_statistics(args.common_path, args.scaled_table, args.unscaled_table, args.images,
-                         args.title, args.o, args.add_plots)
+    visualise_statistics(args.common_path, args.scaled_table, args.unscaled_table, args.images, args.data_path,
+                         args.processed_logs, args.save_logs, args.title, args.o, args.add_plots, args.no_images)
 
 
 if __name__ == '__main__':
