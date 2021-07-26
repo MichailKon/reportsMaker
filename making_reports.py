@@ -661,7 +661,12 @@ def get_pairplot(df_unscaled, common_path):
     now_df.columns = list(map(lambda x: WORDS.get(x, x), now_df.columns))
     now_df = now_df[now_df.cluster != "-1"]
     now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
-    plot = sns.pairplot(now_df, hue='cluster', palette=now_colors, vars=now_df.columns[:-1], kind='reg')
+    for i in ['kde', 'hist', 'none']:
+        try:
+            plot = sns.pairplot(now_df, hue='cluster', palette=now_colors, vars=now_df.columns[:-1], diag_kind=i)
+        except np.linalg.LinAlgError:
+            continue
+    # I think that i have plot now
     now_path = get_plot_filename(common_path)
     plot.savefig(now_path)
     plt.clf()
