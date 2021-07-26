@@ -15,6 +15,7 @@ import json
 import seaborn as sns
 import matplotlib.pyplot as plt
 import argparse
+from matplotlib.ticker import FuncFormatter
 
 RED = [255, 0, 0]
 ORANGE = [255, 135, 0]
@@ -650,6 +651,7 @@ def get_lda(df_unscaled, common_path):
         <tr><td><img  src=\"data:image/png;base64,{read_img_as_base64(now_path1)}\"></td></tr>
         </table>
     """
+    res = f"""<img  src="data:image/png;base64,{read_img_as_base64(now_path1)}">"""
     return res
 
 
@@ -659,7 +661,7 @@ def get_pairplot(df_unscaled, common_path):
     now_df.columns = list(map(lambda x: WORDS.get(x, x), now_df.columns))
     now_df = now_df[now_df.cluster != "-1"]
     now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
-    plot = sns.pairplot(now_df, hue='cluster', palette=now_colors)
+    plot = sns.pairplot(now_df, hue='cluster', palette=now_colors, vars=now_df.columns[:-1], kind='reg')
     now_path = get_plot_filename(common_path)
     plot.savefig(now_path)
     plt.clf()
@@ -784,8 +786,6 @@ def get_info_histplot(data_path, processed_df_path='', save_logs=''):
     df1.date_start = pd.to_datetime(df1.date_start)
     df1.close_date = pd.to_datetime(df1.close_date)
 
-    cnt_blocks = 10
-
     cur_df = df1.copy()
     cur_df.submission_time = pd.to_datetime(cur_df.submission_time).map(lambda x: x.date())
     cur_df.submission_time = pd.to_datetime(cur_df.submission_time)
@@ -817,19 +817,22 @@ def get_info_histplot(data_path, processed_df_path='', save_logs=''):
         for j in range(len(data)):
             data[j] = list(data[j])
             data[j][0] -= add
-        course_len = cs[cs.id == chosen_course[user_id]].course_len.iloc[0]
+        course_len = data[-1][0]
+        cnt_blocks = 3
         one_block = (course_len + 1) / cnt_blocks
         now = np.zeros(cnt_blocks)
         for i in data:
-            now[int(i[0] / one_block)] = i[1]
-        res[user_id] = now
+            now[int(i[0] / one_block)] += i[1]
+        res[user_id] = now.astype('int')
     return res
 
 
 def insert_histplot(common_path, data, user_id):
+    sns.set(font_scale=2)
     now = np.array(data[user_id])
-    plot = sns.barplot(x=np.arange(now.shape[0]), y=data[user_id])
-    plot.set(xticklabels=[])
+    plot = sns.barplot(x=np.arange(now.shape[0]), y=data[user_id], ci=None)
+    # plot.gca().xaxis.set_major_formatter(FuncFormatter(lambda x, _: int(x)))
+    # plot.gca().yaxis.set_major_formatter(FuncFormatter(lambda x, _: int(x)))
     path = get_plot_filename(common_path)
     plot.get_figure().savefig(path)
     plot.get_figure().clf()
