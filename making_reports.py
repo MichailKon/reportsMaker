@@ -633,7 +633,10 @@ def get_lda(df_unscaled, common_path):
     for i in now_df.columns:
         if (now_df[i].nunique() == 1 or str(i).endswith('.1')) and i != "cluster":
             now_df = now_df.drop(i, axis=1)
-    df_transformed = lda_fit_and_transform(now_df.drop('cluster', axis=1), now_df.cluster)
+    try:
+        df_transformed = lda_fit_and_transform(now_df.drop('cluster', axis=1), now_df.cluster)
+    except np.linalg.LinAlgError:
+        return ""
     now_colors = dict(zip(sorted(now_df.cluster.unique()), COLORS3[:now_df.cluster.nunique()]))
     fig1 = px.scatter(x=df_transformed[:, 0],
                       y=df_transformed[:, 1],
@@ -743,66 +746,37 @@ def insert_plots(df_unscaled, cluster, common_path):
 
 
 def get_info_histplot(data_path, processed_df_path='', save_logs=''):
-    def calc_verdict(verdict, is_achieved, score, max_score):
-        return verdict if isinstance(verdict, str) else 'ok' if is_achieved == True and score == max_score else 'wrong'
-
     from collections import defaultdict, Counter
-
-    def filter_logs(lg: pd.DataFrame):
-        was = set()
-
-        data = []
-        lg['submission_time'] = pd.to_datetime(lg['submission_time'])
-        lg.sort_values(by='submission_time', inplace=True)
-        for i in tqdm.tqdm(lg.itertuples(), total=len(lg)):
-            if (i.user_id, i.element_progress_id) in was:
-                continue
-            if i.verdict == 'ok':
-                was.add((i.user_id, i.element_progress_id))
-            data.append(i)
-        return pd.DataFrame(data).set_index('Index')
-
     cs = pd.read_csv(os.path.join(data_path, 'course.csv'))
     cs.date_start = pd.to_datetime(cs.date_start)
     cs.close_date = pd.to_datetime(cs.close_date)
     cs['course_len'] = (cs.close_date - cs.date_start).dt.days
 
     if not processed_df_path:
-        logs = pd.read_csv(os.path.join(data_path, 'solution_log.csv'))
-        uep = pd.read_csv(os.path.join(data_path, 'user_element_progress.csv'))
-        ce = pd.read_csv(os.path.join(data_path, 'course_element.csv'))
+        ump = pd.read_csv(os.path.join(data_path, 'user_module_progress.csv'))
+        cm = pd.read_csv(os.path.join(data_path, 'course_module.csv'))
+        ump = ump.join(cm[['id', 'is_advanced']].set_index('id'), on=['course_module_id'], how='inner')
+        ump = ump.join(cs.set_index('id')[['date_start']], on='course_id', how='inner')
 
-        uep = uep.join(ce[['module_id', 'element_type', 'element_id', 'score', 'id', 'is_advanced']].set_index(
-            ['module_id', 'element_type', 'element_id']).rename(
-            columns={'score': 'max_score', 'id': 'actual_element_id'}),
-            on=['course_module_id', 'course_element_type', 'course_element_id'], how='inner')
-        df1 = logs.join(
-            uep[['id', 'user_id', 'is_achieved', 'achieve_reason', 'course_id', 'max_score', 'is_advanced']].set_index(
-                'id'), on='element_progress_id', how='inner')
-        df1 = df1.join(cs[['id', 'date_start', 'close_date', 'course_len']].set_index('id'), on='course_id')
-        df1 = df1[df1.achieve_reason != 'transferred']
-        df1['verdict'] = df1.apply((lambda i: calc_verdict(i['verdict'], i['is_achieved'], i['score'], i['max_score'])),
-                                   axis=1)
-        df1 = filter_logs(df1)
+        cur_df = ump.copy()
     else:
-        df1 = pd.read_csv(processed_df_path, index_col=0)
+        cur_df = pd.read_csv(processed_df_path, index_col=0)
     if save_logs:
-        df1.to_csv(save_logs)
-    df1.date_start = pd.to_datetime(df1.date_start)
-    df1.close_date = pd.to_datetime(df1.close_date)
+        cur_df.to_csv(save_logs)
+    cur_df.date_start = pd.to_datetime(cur_df.date_start).map(lambda x: x.date())
+    cur_df.date_start = pd.to_datetime(cur_df.date_start)
 
-    cur_df = df1.copy()
-    cur_df.submission_time = pd.to_datetime(cur_df.submission_time).map(lambda x: x.date())
-    cur_df.submission_time = pd.to_datetime(cur_df.submission_time)
-    cur_df['course_len'] = (cur_df.close_date - cur_df.date_start).dt.days
-    cur_df['passed_time'] = cur_df.submission_time - cur_df.date_start
+    cur_df.time_achieved = pd.to_datetime(cur_df.time_achieved).map(lambda x: x.date())
+    cur_df.time_achieved = pd.to_datetime(cur_df.time_achieved)
+    cur_df['passed_time'] = cur_df.time_achieved - cur_df.date_start
+    cur_df = cur_df[~cur_df.passed_time.isna()]
+
     converted_logs = defaultdict(lambda: defaultdict(list))
     cnt_tasks = defaultdict(lambda: defaultdict(int))
     chosen_course = dict()
     for i in tqdm.tqdm(cur_df.itertuples(), total=cur_df.shape[0]):
-        if i.verdict == 'ok':
-            cnt_tasks[i.user_id][i.course_id] += 1
-            converted_logs[i.user_id][i.course_id].append(i.passed_time.days)
+        cnt_tasks[i.user_id][i.course_id] += 1
+        converted_logs[i.user_id][i.course_id].append(i.passed_time.days)
 
     for i in tqdm.tqdm(cnt_tasks.items()):
         courses = dict(i[1])
@@ -813,29 +787,34 @@ def get_info_histplot(data_path, processed_df_path='', save_logs=''):
     for i in tqdm.tqdm(converted_logs):
         converted_logs[i] = Counter(converted_logs[i])
 
-    res = dict()
+    res = defaultdict(dict)
+    CNT_BLOCKS = 3
 
     for user_id, data in tqdm.tqdm(converted_logs.items()):
         data = list(sorted(data.items()))
         data = np.array(data)
+
         add = data[0][0]
         for j in range(len(data)):
             data[j] = list(data[j])
             data[j][0] -= add
+
         course_len = data[-1][0]
-        cnt_blocks = 3
-        one_block = (course_len + 1) / cnt_blocks
-        now = np.zeros(cnt_blocks)
+        one_block = (course_len + 1) / CNT_BLOCKS
+
+        now_blocks = np.zeros(CNT_BLOCKS)
         for i in data:
-            now[int(i[0] / one_block)] += i[1]
-        res[user_id] = now.astype('int')
-    return res
+            now_blocks[int(i[0] / one_block)] += i[1]
+
+        for i in range(CNT_BLOCKS):
+            res[f'block_{i}'][user_id] = now_blocks[i]
+    return pd.DataFrame(res)
 
 
 def insert_histplot(common_path, data, user_id):
     sns.set(font_scale=2)
-    now = np.array(data[user_id])
-    plot = sns.barplot(x=np.arange(now.shape[0]), y=data[user_id], ci=None)
+    now = np.array(data.loc[user_id])
+    plot = sns.barplot(x=np.arange(now.shape[0]), y=np.array(data.loc[user_id]), ci=None)
     # plot.gca().xaxis.set_major_formatter(FuncFormatter(lambda x, _: int(x)))
     # plot.gca().yaxis.set_major_formatter(FuncFormatter(lambda x, _: int(x)))
     path = get_plot_filename(common_path)
@@ -860,7 +839,10 @@ def insert_images(common_img_path, data_path, add_plots, df_unscaled, common_pat
             continue
         if drop_noise and cur_cluster == -1:
             continue
-        cur_cluster = CONVERTING[cur_cluster]
+        try:
+            cur_cluster = CONVERTING[cur_cluster]
+        except KeyError:
+            continue
         for photo in os.listdir(os.path.join(common_img_path, cluster)):
             if photo.startswith('.') or photo.startswith('__'):
                 continue
@@ -1067,6 +1049,7 @@ def visualise_statistics(common_path, scaled_table_name, unscale_table_name, ima
     html_file.write(res)
     html_file.close()
     print('DONE')
+
 
 
 def main():
